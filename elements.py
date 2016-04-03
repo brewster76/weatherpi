@@ -57,7 +57,7 @@ class elementClass:
     def handleEvent(self, eventObj):
         pass # This class is meant to be overridden.
 
-    def update_condition(self, weather_underground, sun_almanac):
+    def update_condition(self, weather_underground, sun_almanac, indoor_sensor):
         pass # This class is meant to be overridden.
 
     def render(self):
@@ -93,7 +93,7 @@ class IconElementClass(elementClass):
 
         self.surface = pygame.Surface(self.size)
 
-    def update_condition(self, weather_underground, sun_almanac):
+    def update_condition(self, weather_underground, sun_almanac, indoor_sensor):
         """Extract from weather underground supplied URL"""
         url = ""
 
@@ -182,7 +182,7 @@ class AlmanacElementClass(elementClass):
         if self.text is not None:
             self.surface = self.font.render(self.text, True, self.colour)
 
-    def update_condition(self, weather_underground, sun_almanac):
+    def update_condition(self, weather_underground, sun_almanac, indoor_sensor):
         sun = sun_almanac.sun[self.element_name]
 
         self.text = sun.strftime(self.text_format)
@@ -228,7 +228,7 @@ class ForecastElementClass(elementClass):
             self.align_to_other = self.element_settings['align_condition']
             self.align_base_pos = self.pos[0]
 
-    def update_condition(self, weather_underground, sun_almanac):
+    def update_condition(self, weather_underground, sun_almanac, indoor_sensor):
         try:
             wu_element = weather_underground.forecast[self.day][self.element_name]
         except KeyError:
@@ -258,11 +258,36 @@ class ConditionElementClass(elementClass):
         self.text_format = self.element_settings['text']
         self.text = None
 
-    def update_condition(self, weather_underground, sun_almanac):
+    def update_condition(self, weather_underground, sun_almanac, indoor_sensor):
         try:
             self.text = self.text_format % weather_underground.conditions[self.element_name]
         except KeyError:
             syslog.syslog(syslog.LOG_DEBUG, "Could not find condition element [%s]" % self.element_name)
+            self.text = "Err"
+            return
+
+    def render(self):
+        self.surface = self.font.render(self.text, True, self.colour)
+
+class DHT11ElementClass(elementClass):
+    def __init__(self, conf_settings, element_name, background_colour):
+        elementClass.__init__(self, conf_settings, element_name, background_colour)
+
+        self.text_format = self.element_settings['text']
+        self.text = None
+
+    def update_condition(self, weather_underground, sun_almanac, indoor_sensor):
+        reading = getattr(indoor_sensor, self.element_name)
+
+        if reading is None:
+            syslog.syslog(syslog.LOG_DEBUG, "indoor_sensor element [%s] in None" % self.element_name)
+            self.text = "Err"
+            return
+
+        try:
+            self.text = self.text_format % reading
+        except KeyError:
+            syslog.syslog(syslog.LOG_DEBUG, "Could not find indoor_sensor element [%s]" % self.element_name)
             self.text = "Err"
             return
 

@@ -76,6 +76,46 @@ def areWePi():
     return (platform.machine() == 'armv7l')
 
 
+class DHT11(object):
+    """Periodically takes reads from a DHT11 type temperature and pressure sensor"""
+
+    def __init__(self, conf_settings):
+        self.pin = int(conf_settings['pin'])
+        self.threading_interval = int(conf_settings['update'])
+
+        self.sensor = None
+        if areWePi():
+            import Adafruit_DHT
+            self.sensor = getattr(Adafruit_DHT, conf_settings['sensor'])
+
+        self.temperature = 0.0
+        self.humidity = 0.0
+
+        thread = threading.Thread(target=self.run, args=())
+        thread.daemon = True                            # Daemonize thread
+        thread.start()                                  # Start the execution
+
+    def refresh(self):
+        if self.sensor is None:
+            # No DHT22 chip - make up readings
+            self.temperature = 33.0
+            self.humidity = 50.0
+        else:
+            import Adafruit_DHT
+            humidity, temperature = Adafruit_DHT.read_retry(self.sensor, self.pin)
+
+            if humidity is not None:
+                self.humidity = humidity
+
+            if temperature is not None:
+                self.temperature = temperature
+
+    def run(self):
+        while True:
+            self.refresh()
+
+            time.sleep(self.threading_interval)
+
 class Wunderground(object):
     """Handles getting forecasts out of Weather Underground"""
 
@@ -296,11 +336,17 @@ class Database():
         self.db = sqlite3.connect(database_path)
         self.cursor = self.db.cursor()
 
+        self.schema = [['date',     'TEXT'],
+                       ['time',     'TEXT'],
+                       ['temp',     'REAL'],
+                       ['pressure', 'REAL'],
+                       ['humidity', 'REAL']]
+
         # Do we need to create a new table?
         try:
             self.cursor.execute("SELECT * from history LIMIT 1")
         except sqlite3.OperationalError:
-            self.cursor.execute("CREATE TABLE history(date TEXT, time TEXT, temp REAL, pressure REAL, humidity REAL)")
+            self.cursor.execute("CREATE TABLE history(%s)" % self._create_table_text())
             self.db.commit()
             print "Created new data table in database %s" % database_path
 
@@ -318,3 +364,15 @@ class Database():
                             (data_tuple['date'], data_tuple['time'], data_tuple['temp'],
                              data_tuple['pressure'], data_tuple['humidity']))
         self.db.commit()
+
+
+    def _create_table_text(self):
+        text = ""
+
+        for i in range(0, len(self.schema)):
+            if i > 0:
+                text = text + ", "
+
+            text = text + "%s %s" % (self.schema[i][0], self.schema[i][1])
+
+        return text

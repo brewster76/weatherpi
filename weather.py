@@ -12,6 +12,7 @@ import utils
 import elements
 
 SETTINGS_FILE = "weather.conf"
+DATABASE_FILE = "history.sdb"
 
 syslog.syslog(syslog.LOG_INFO, "Weather forecaster starting up...")
 
@@ -62,7 +63,8 @@ element_types = [['DateTime',   'DateTimeElementClass'],
                  ['Conditions', 'ConditionElementClass'],
                  ['Icons',      'IconElementClass'],
                  ['Forecast',   'ForecastElementClass'],
-                 ['Almanac',    'AlmanacElementClass']]
+                 ['Almanac',    'AlmanacElementClass'],
+                 ['DHT11',      'DHT11ElementClass']]
 
 for section_name, function_name in element_types:
     if 'Forecast' is section_name:
@@ -76,7 +78,10 @@ for section_name, function_name in element_types:
             element_list.append(new_element)
 
 weather_underground = utils.Wunderground(settings, backlight)
+indoor_sensor = utils.DHT11(settings['DHT11'])
+
 screen_update = utils.screenUpdate(settings['Screen'])
+# database = utils.Database(DATABASE_FILE)
 
 while True:
     for event in pygame.event.get():
@@ -96,7 +101,7 @@ while True:
             element.blank_surface()
             element.blit(screen)
 
-            element.update_condition(weather_underground, sun_almanac)
+            element.update_condition(weather_underground, sun_almanac, indoor_sensor)
             element.render()
 
         # Deal with any text alignments
