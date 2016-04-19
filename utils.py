@@ -332,12 +332,19 @@ class screenUpdate:
 
 # Deal with the sqlite database
 class Database():
-    def __init__(self, database_path):
-        self.db = sqlite3.connect(database_path)
+    def __init__(self, database_settings):
+        if 'update' in database_settings:
+            self.update_interval = int(database_settings['update'])
+        else:
+            self.update_interval = None
+
+        self.last_updated = None
+
+
+        self.db = sqlite3.connect(database_settings['filename'])
         self.cursor = self.db.cursor()
 
-        self.schema = [['date',     'TEXT'],
-                       ['time',     'TEXT'],
+        self.schema = [['datetime', 'REAL'],
                        ['temp',     'REAL'],
                        ['pressure', 'REAL'],
                        ['humidity', 'REAL']]
@@ -348,23 +355,54 @@ class Database():
         except sqlite3.OperationalError:
             self.cursor.execute("CREATE TABLE history(%s)" % self._create_table_text())
             self.db.commit()
-            print "Created new data table in database %s" % database_path
+            print "Created new data table in database %s" % database_settings['filename']
 
-    def log_reading(self, data_tuple):
+    def log_reading(self, weather_underground, indoor_sensor):
+        data_dict = {}
+
+        data_dict['humidity'] = indoor_sensor.humidity
+        data_dict['temp'] = indoor_sensor.temperature
+        data_dict['pressure'] = weather_underground.conditions['pressure_mb']
+
+        self.write_reading(data_dict)
+        self.last_updated = time.time()
+
+    def write_reading(self, data_dict):
         """Saves reading to the database.
-        Expects a dictionary in the format {'date': "dd/mm/yyyy", 'time': 'hh:mm', 'level': float value,
+        Expects a dictionary in the format {'datetime': 12345678, 'level': float value,
                                              'station': "Abingdon Lock', 'stream': "upstream"} """
 
-        # Was a real record found?
-        if (data_tuple['date'] is None) or (data_tuple['time'] is None):
-            syslog.syslog(syslog.LOG_WARNING, "Database.log_reading - no data received")
-            return
+        # Time specified?
+        if not self._time_specified(data_dict):
+            data_dict['datetime'] = int(time.time())
 
-        self.cursor.execute("INSERT into history(date, time, temp, pressure, humidity) VALUES (?,?,?,?,?)",
-                            (data_tuple['date'], data_tuple['time'], data_tuple['temp'],
-                             data_tuple['pressure'], data_tuple['humidity']))
+        field_list = ', '.join(data_dict.keys())
+        value_list = ('?,'*len(data_dict))[:-1]
+        value_tuple = tuple(data_dict.values())
+
+        sql_string = "INSERT into history (%s) VALUES (%s)" % (field_list, value_list)
+
+        self.cursor.execute(sql_string, value_tuple)
         self.db.commit()
 
+        syslog.syslog(syslog.LOG_DEBUG, "Wrote to database (%d)" % data_dict['datetime'])
+
+    def updateDue(self):
+        if self.last_updated is None:
+            return True
+
+        if self.update_interval is not None:
+            if (time.time() - self.update_interval) > self.last_updated:
+                return True
+
+        return False
+
+    def _time_specified(self, data_dict):
+        if 'datetime' in data_dict:
+            if data_dict['datetime'] is not None:
+                return True
+
+        return False
 
     def _create_table_text(self):
         text = ""

@@ -12,7 +12,6 @@ import utils
 import elements
 
 SETTINGS_FILE = "weather.conf"
-DATABASE_FILE = "history.sdb"
 
 syslog.syslog(syslog.LOG_INFO, "Weather forecaster starting up...")
 
@@ -81,7 +80,7 @@ weather_underground = utils.Wunderground(settings, backlight)
 indoor_sensor = utils.DHT11(settings['DHT11'])
 
 screen_update = utils.screenUpdate(settings['Screen'])
-# database = utils.Database(DATABASE_FILE)
+database = utils.Database(settings['Database'])
 
 while True:
     for event in pygame.event.get():
@@ -118,5 +117,8 @@ while True:
         pygame.display.update()
 
         screen_update.updateDone()
+
+    if database.updateDue():
+        database.log_reading(weather_underground, indoor_sensor)
 
     pygame.time.Clock().tick(10)
