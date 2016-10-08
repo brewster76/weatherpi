@@ -1,0 +1,180 @@
+#:kivy 1.7.2
+<OptionsScreen>:
+
+    BoxLayout:
+        orientation: 'vertical'
+
+        BoxLayout:
+            spacing: 10
+            padding: 10
+            size_hint: 1, 0.1
+            orientation: 'horizontal'
+
+            Button:
+                text: 'Power'
+                on_release: root.power_off()
+
+            Button:
+                text: 'Restart'
+                on_release: root.restart()
+
+            Label:
+                # Padding space
+                size_hint: 0.05, 1
+                text: ''
+
+            Label:
+                size_hint: None, 0.8
+                text: 'Wifi'
+
+                canvas.before:
+                    Color:
+                        rgb: root.wifi_color
+                    Rectangle:
+                        pos: self.pos
+                        size: self.size
+
+            Label:
+                size_hint: None, 0.8
+                text: 'DHT22'
+
+                canvas.before:
+                    Color:
+                        rgb: root.DHT22_color
+                    Rectangle:
+                        pos: self.pos
+                        size: self.size
+
+            Label:
+                size_hint: None, 0.8
+                text: 'Weather'
+
+                canvas.before:
+                    Color:
+                        rgb: root.wunderground_color
+                    Rectangle:
+                        pos: self.pos
+                        size: self.size
+
+
+            Label:
+                size_hint: None, 0.8
+                text: 'LIFX'
+
+                canvas.before:
+                    Color:
+                        rgb: root.LIFX_color
+                    Rectangle:
+                        pos: self.pos
+                        size: self.size
+
+        Label:
+            # Padding space
+            size_hint: 1, 0.025
+            text: ''
+
+        ScrollView:
+            size_hint: 0.9, 0.55
+            pos_hint: {'center_x': 0.5}
+            do_scroll: "true"
+
+            Label:
+                #font_name: 'data/fonts/DroidSansMono.ttf'
+                font_size: 14
+                color: 0.6, 0.6, 0.6, 1.0
+                size_hint_y: None
+                height: self.texture_size[1]
+                text_size: self.width, None
+                text: root.logger_history
+
+        Label:
+            # Padding space
+            size_hint: 1, 0.025
+            text: ''
+
+        GridLayout:
+            spacing: 10
+            padding: 10
+            size_hint: 1, 0.2
+            cols: 3
+            padding: 10
+
+            Label:
+                text: "Backlight timeout"
+
+            Slider:
+                min: 0
+                max: 7
+                step: 1
+                value: 4
+                on_value: root.backlight_timeout_change(self.value)
+
+            Label:
+                text: root.backlight_timeout_label
+
+            Label:
+                text: "Backlight brightness"
+
+            Slider:
+                min: 0
+                max: 255
+                value: 255
+                id: "brightness_slider"
+                on_value: root.backlight_brightness_change(self.value)
+
+            BoxLayout:
+                orientation: 'horizontal'
+
+                Label:
+                    # Padding space
+                    size_hint: 0.2, 1
+                    text: ''
+
+                Button:
+                    size_hint: 0.6, 1
+                    text: "Back"
+                    on_release:
+                        root.manager.transition.direction = 'right'
+                        root.manager.current = 'weather'
+
+                Label:
+                    # Padding space
+                    size_hint: 0.2, 1
+                    text: ''
+
+        Label:
+            # Padding space
+            size_hint: 1, 0.05
+            text: ''
+
+<LifxScreen>:
+
+    BoxLayout:
+        orientation: 'vertical'
+
+        Label:
+            size_hint: 1, 0.15
+            font_size: 20
+            text: "Lights"
+
+        BoxLayout:
+            id: light_box
+            size_hint: 1, 0.65
+            orientation: 'horizontal'
+
+
+
+        BoxLayout:
+            orientation: 'horizontal'
+            size_hint: 1, 0.2
+            padding: 20, 20
+
+            Label:
+                size_hint: 0.8, 1
+
+            Button:
+                size_hint: 0.2, 1
+                text: "Back"
+                on_release:
+                    root.manager.transition.direction = 'left'
+                    root.manager.current = 'weather'

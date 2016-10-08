@@ -1,4 +1,4 @@
-from utils import backlight
+from elements import element_types
 
 __author__ = 'nick'
 
@@ -15,19 +15,29 @@ SETTINGS_FILE = "weather.conf"
 
 syslog.syslog(syslog.LOG_INFO, "Weather forecaster starting up...")
 
+if os.path.isfile(SETTINGS_FILE) is False:
+    syslog.syslog(syslog.LOG_ERR, "Cannot open configuration file %s" % SETTINGS_FILE)
+    exit()
+
 settings = configobj.ConfigObj(SETTINGS_FILE)
+
+syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_INFO))
+
+if 'debug' in settings['General']:
+    if settings['General'].as_bool('debug'):
+        syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
 
 sun_almanac = utils.almanac(settings['Almanac'])
 
 # Get pygame going
 pygame.init()
 
-backlight = backlight(settings['Backlight'])
+backlight = utils.backlight(settings['Backlight'])
 
 if settings['Screen'].as_bool('framebuffer'):
     # Check which frame buffer drivers are available
     # Start with fbcon since directfb hangs with composite output
-    drivers = ['fbcon', 'directfb', 'svgalib']
+    drivers = ['directfb', 'fbcon', 'svgalib']
     found = False
     for driver in drivers:
         # Make sure that SDL_VIDEODRIVER is set
@@ -45,7 +55,7 @@ if settings['Screen'].as_bool('framebuffer'):
         raise Exception('No suitable video driver found!')
 
     size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
-    syslog.syslog(syslog.LOG_INFO, "Framebuffer size: %d x %d" % (size[0], size[1]))
+    syslog.syslog(syslog.LOG_INFO, "Framebuffer size: %d x %d, driver = %s" % (size[0], size[1], driver))
     pygame.mouse.set_visible(False)
     
     screen = pygame.display.set_mode(size, pygame.FULLSCREEN)
@@ -56,14 +66,6 @@ background_colour = utils.listToTuple(settings['Screen']['backgorund_colour'])
 screen.fill(background_colour)
 
 element_list = []
-element_types = [['DateTime',   'DateTimeElementClass'],
-                 ['Buttons',    'pygameButtonClass'],
-                 ['Text',       'TextElementClass'],
-                 ['Conditions', 'ConditionElementClass'],
-                 ['Icons',      'IconElementClass'],
-                 ['Forecast',   'ForecastElementClass'],
-                 ['Almanac',    'AlmanacElementClass'],
-                 ['DHT11',      'DHT11ElementClass']]
 
 for section_name, function_name in element_types:
     if 'Forecast' is section_name:
@@ -82,14 +84,25 @@ indoor_sensor = utils.DHT11(settings['DHT11'])
 screen_update = utils.screenUpdate(settings['Screen'])
 database = utils.Database(settings['Database'])
 
+input_events = utils.eventQueue()
+
 while True:
-    for event in pygame.event.get():
+
+    for event in input_events:
         if event.type == pygame.QUIT:
             sys.exit()
 
-        for element in element_list:
-            element.handleEvent(event)
-            backlight.handle_event(event)
+        # We only care bout mouse-related events
+        if event.type in (pygame.MOUSEBUTTONUP, pygame.MOUSEBUTTONDOWN):
+
+            # Backlight gets all the events when it's off
+            if backlight.state is False:
+                backlight.handle_event(event)
+            else:
+                for element in element_list:
+                    if element.handleEvent(event):
+                        # Force an update
+                        screen_update.last_updated = 0
 
     backlight.update_backlight()
 
@@ -121,4 +134,4 @@ while True:
     if database.updateDue():
         database.log_reading(weather_underground, indoor_sensor)
 
-    pygame.time.Clock().tick(10)
+    pygame.time.wait(10)

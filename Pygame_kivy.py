@@ -25,7 +25,7 @@ import traceback
 import elements
 import utils
 
-SETTINGS_FILE = "weather_nolifx.conf"
+SETTINGS_FILE = "/home/pi/Pygame/weather_nolifx.conf"
 WEATHER_FILE = "/tmp/birthdays.pkl"
 
 WEATHER_SCREEN = "weather"
@@ -328,7 +328,7 @@ if __name__ == '__main__':
     try:
         WeatherApp().run()
     except:
-        f = open('crashlog_%s' % time.strftime("%Y-%m-%d_%H:%M:%S"), 'w')
+        f = open('/home/pi/Pygame/crashlogs/crashlog_%s' % time.strftime("%Y-%m-%d_%H:%M:%S"), 'w')
         f.write(time.strftime('%c') + '\n')
         f.write('-' * 60 + '\n')
         traceback.print_exc(file=f)

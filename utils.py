@@ -1,18 +1,315 @@
+import colorsys
+import datetime
 import json
 import os
 import pickle
 import pygame
-import urllib
-import time
-import datetime
-import syslog
-import astral
-import threading
+import socket
 import sqlite3
+import syslog
+import threading
+import time
+import urllib
+
+try:
+    import astral
+except ImportError:
+    pass
+
+import lifx
+import lifx.device
+
+from kivy.uix.togglebutton import ToggleButton
 
 __author__ = 'nick'
 
-CONDITIONS_FILE = 'conditions.p'
+CONDITIONS_FILE = '/home/pi/Pygame/conditions.p'
+SEMAPHORE_FILE = '/tmp/DHT22'
+
+
+def pass_error_wrapper(gen):
+    while True:
+        try:
+            yield next(gen)
+        except StopIteration:
+            raise
+        except NameError as e:
+            print(e)
+            raise StopIteration
+
+
+class eventQueue:
+    """Handles input events either from pygame, or the touchscreen driver if we're running on the Raspberry pi"""
+    def __init__(self):
+        self.touchscreen = None
+
+        if areWePi():
+            import ft5406
+            self.touchscreen = ft5406.Touchscreen()
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        if self.touchscreen is None:
+            # No touchscreen - use the pygame event queue
+            for event in pygame.event.get():
+                return event
+
+            # No events remaining
+            raise StopIteration
+
+        for touch in self.touchscreen.poll():
+            if touch.slot == 0:
+                if touch.valid is True:
+                    return pygame.event.Event(pygame.MOUSEBUTTONDOWN, {'pos': (touch.x, touch.y)})
+                else:
+                    return pygame.event.Event(pygame.MOUSEBUTTONUP, {'pos': (touch.x, touch.y)})
+
+        # No events remaining
+        raise StopIteration
+
+class lifxLights():
+    def __init__(self, settings):
+        self.settings = settings
+        self.light_button_list = []
+        self.group_list = []
+
+        # Create the client and start discovery
+        try:
+            self.lights = lifx.Client()
+        except socket.error:
+            print "Cannot connect to Lifx bulbs"
+            return
+
+        # Wait for discovery to complete
+        time.sleep(0.5)
+
+    def refresh(self):
+        self.light_button_list = []
+
+        try:
+            responding_lights = self.lights.get_devices()
+        except AttributeError:
+            syslog.syslog(syslog.LOG_INFO, "utils.py: responding_lights = self.lights.get_devices(), returned AttributeError")
+        else:
+            for l in responding_lights:
+                try:
+                    temp_label = l.label
+                except lifx.device.DeviceTimeoutError:
+                    temp_label = None
+
+                if temp_label in self.settings['LifX']['lights']:
+                    tl = ToggleLight(light=l)
+                    self.light_button_list.append(tl)
+
+        #
+        # TODO: Tidy this bit up, add a graceful way for refresh to fail...
+        #
+        try:
+            responding_groups = self.lights.get_groups()
+        except lifx.device.DeviceTimeoutError:
+            syslog.syslog(syslog.LOG_INFO, "utils.py: responding_groups = self.lights.get_groups(), returned DeviceTimeoutError")
+        else:
+            for i in range(len(responding_groups)):
+                if responding_groups[i].label in self.settings['LifX']['groups']:
+                    tl = ToggleLight(group=responding_groups[i])
+                    self.light_button_list.append(tl)
+
+
+class ToggleLight(ToggleButton):
+    def __init__(self, light=None, group=None, **kwargs):
+        super(ToggleLight, self).__init__(**kwargs)
+
+        self.light = light
+        self.group = group
+
+        if self.light is not None:
+            self.state = self.power_to_state(self.light.power)
+            self.text = self.light.label
+        else:
+            assert(self.group is not None)
+
+            self.state = self.power_to_state(self.group_power())
+            self.text = self.group.label
+
+        print "New button... %s" % self.text
+
+        self.bind(state=self.state_change)
+
+    def group_power(self):
+        """Returns true if any of the light group members are powered on"""
+        for m in self.group.members:
+            if m.power:
+                return True
+
+        return False
+
+    def power_to_state(self, power):
+        return 'down' if power else 'normal'
+
+    @property
+    def state_to_power(self):
+        return True if self.state == 'down' else False
+
+    def state_change(self, *args):
+        if self.light is not None:
+            self.light.power = self.state_to_power
+
+        if self.group is not None:
+            for m in self.group.members:
+                m.power = self.state_to_power
+
+
+class lifxLight_old():
+    lights = None
+
+    def __init__(self, light=None, group=None):
+        self.light_name = light
+        self.group_name = group
+
+        self._light = None
+        self._group = None
+
+        if self.light_name is None:
+            self.isgroup = True
+        else:
+            self.isgroup = False
+
+        self._find_light()
+
+    def toggle(self):
+        power = self.power()
+
+        if power is not None:
+            power = not power
+
+            if self.isgroup:
+                self._group.fade_power(power, 850)
+            else:
+                self._light.fade_power(power, 850)
+            return power
+
+        return None
+
+    def power(self):
+        if self.isgroup is False:
+            if self._light is None:
+                # Try and find the light
+                if self._find_light() is False:
+                    print "Cannot connect to light %s" % self.light_name
+                    return None
+
+            try:
+                p = self._light.power
+            except (lifx.device.DeviceTimeoutError, socket.error):
+                return None
+
+            return p
+
+        else:
+            if self._group is None:
+                # Try and find the group
+                if self._find_light() is False:
+                    print "Cannot connect to group %s" % self.group_name
+                    return None
+
+            # Return true if any lights on at all in the group
+            try:
+                num_group_members = len(self._group.members)
+            except lifx.device.DeviceTimeoutError:
+                return None
+
+            for i in range(0, num_group_members):
+                try:
+                    p = self._group.members[i].power
+                except lifx.device.DeviceTimeoutError:
+                    return None
+
+                if p is True:
+                    return True
+
+            return False
+
+    def lifx_rgb_color(self):
+        if self.isgroup:
+            light_colors = []
+
+            for i in range(0, len(self._group.members)):
+                light_colors.append(light_to_rgb_color(self._group.members[i]))
+
+            return light_colors
+        else:
+            return light_to_rgb_color(self._light)
+
+    def _init_lights(self):
+        # Create the client and start discovery
+        try:
+            lifxLight.lights = lifx.Client()
+        except socket.error:
+            print "Cannot connect to Lifx bulbs"
+            return False
+
+        # Wait for discovery to complete
+        time.sleep(0.2)
+
+        if lifxLight.lights is not None:
+            #
+            # List everything that's found
+            #
+            for l in lifxLight.lights:
+                print "Found light %s, switched on = %s" % (l.label, l.power)
+
+            groups = lifxLight.lights.get_groups()
+            for i in range(len(groups)):
+                print groups[i].label
+                #print "Found group %d, switched on = " % (groups[i].label)
+
+            return True
+
+        return False
+
+    def _find_light(self):
+        if lifxLight.lights is None:
+            if self._init_lights() is False:
+                return False
+
+        if self.isgroup is True:
+            groups = lifxLight.lights.get_groups()
+
+            for i in range(len(groups)):
+                try:
+                    label = groups[i].label
+                except lifx.device.DeviceTimeoutError:
+                    pass
+                else:
+                    if self.group_name == label:
+                        self._group = groups[i]
+
+                        return True
+        else:
+            for l in lifxLight.lights:
+                try:
+                    label = l.label
+                except lifx.device.DeviceTimeoutError:
+                    pass
+                else:
+                    if self.light_name == label:
+                        self._light = l
+
+                        return True
+
+        return False
+
+def light_to_rgb_color(light, normalise = 255):
+    """Returns a RGB representation of the light color"""
+    if light is not None:
+        (r, g, b) = colorsys.hsv_to_rgb(light.color.hue / lifx.color.HUE_MAX, light.color.saturation,
+                                        light.color.brightness)
+        return (r * normalise, g * normalise, b * normalise)
+
+    return None
+
 
 def accumulateLeaves(d, max_level=99):
     """Merges leaf options above a ConfigObj section with itself, accumulating the results.
@@ -80,35 +377,28 @@ class DHT11(object):
     """Periodically takes reads from a DHT11 type temperature and pressure sensor"""
 
     def __init__(self, conf_settings):
-        self.pin = int(conf_settings['pin'])
         self.threading_interval = int(conf_settings['update'])
+        self.oldest_reading = int(conf_settings['oldest'])
 
-        self.sensor = None
-        if areWePi():
-            import Adafruit_DHT
-            self.sensor = getattr(Adafruit_DHT, conf_settings['sensor'])
-
-        self.temperature = 0.0
-        self.humidity = 0.0
+        self.temperature = None
+        self.humidity = None
 
         thread = threading.Thread(target=self.run, args=())
         thread.daemon = True                            # Daemonize thread
         thread.start()                                  # Start the execution
 
     def refresh(self):
-        if self.sensor is None:
-            # No DHT22 chip - make up readings
-            self.temperature = 33.0
-            self.humidity = 50.0
-        else:
-            import Adafruit_DHT
-            humidity, temperature = Adafruit_DHT.read_retry(self.sensor, self.pin)
+        self.temperature = None
+        self.humidity = None
 
-            if humidity is not None:
-                self.humidity = humidity
+        try:
+            sensor_reading = pickle.load(open(SEMAPHORE_FILE, 'rb'))
 
-            if temperature is not None:
-                self.temperature = temperature
+            if time.time() - sensor_reading['time'] < self.oldest_reading:
+                self.temperature = sensor_reading['temperature']
+                self.humidity = sensor_reading['humidity']
+        except IOError:
+            pass
 
     def run(self):
         while True:
@@ -129,6 +419,9 @@ class Wunderground(object):
         self.conditions_url = conf_settings['Wunderground']['conditions_url'] % self.api_key
         self.offline = conf_settings['Wunderground'].as_bool('offline')
 
+        if self.offline is True:
+            print "Weather forecasting is offline"
+
         self.conditions = self.forecast = None
 
         self.update_interval = {}
@@ -147,16 +440,17 @@ class Wunderground(object):
         thread.start()                                  # Start the execution
 
     def updateRequired(self, update_type):
-        if self.backlight.state is False:
-            # Only update if background_update interval reached
-            if time.time() - self.last_update[update_type] < self.update_interval['background']:
-                return False
+        if self.backlight is not None:
+            if self.backlight.state is False:
+                # Only update if background_update interval reached
+                if time.time() - self.last_update[update_type] < self.update_interval['background']:
+                    return False
 
-        # Backlight is on
+        # Backlight is on, or not implemented (Kivy Weather)
         if time.time() - self.last_update[update_type] < self.update_interval[update_type]:
             return False
 
-        syslog.syslog(syslog.LOG_INFO, "Updating %s from weather underground" % update_type)
+        syslog.syslog(syslog.LOG_DEBUG, "Updating %s from weather underground" % update_type)
 
         return True
 
@@ -167,17 +461,22 @@ class Wunderground(object):
 
         newforecast = self.get_json(self.forecast_url)
         if newforecast is not None:
-            self.forecast = newforecast['forecast']['simpleforecast']['forecastday']
+            if 'forecast' in newforecast:
+                self.forecast = newforecast['forecast']['simpleforecast']['forecastday']
 
-            for i in range(0, len(self.forecast)):
-                self.forecast[i]['high_low'] = "%s / %s" % (self.forecast[i]['high']['celsius'],
-                                                              self.forecast[i]['low']['celsius'])
+                for i in range(0, len(self.forecast)):
+                    self.forecast[i]['high_low'] = "%s / %s" % (self.forecast[i]['high']['celsius'],
+                                                                  self.forecast[i]['low']['celsius'])
 
-            self.last_update['forecast'] = time.time()
+                self.last_update['forecast'] = time.time()
 
-            return True
+                return True
 
+        # Not successful
         syslog.syslog(syslog.LOG_INFO, "Unable to update forecast from WUnderground")
+
+        # Wait a minute before tryng again
+        self.last_update['forecast'] += 60
 
         return False
 
@@ -192,15 +491,14 @@ class Wunderground(object):
             new_wind = "%s, %.1f" % (self.conditions['wind_dir'], self.conditions['wind_mph'])
             self.conditions['new_wind'] = new_wind
 
-            #
-            # Update database file here
-            #
-
             self.last_update['conditions'] = time.time()
 
             return True
 
         syslog.syslog(syslog.LOG_INFO, "Unable to update conditions from WUnderground")
+
+        # Wait a minute before tryng again
+        self.last_update['conditions'] += 60
 
         return False
 
@@ -231,7 +529,13 @@ class Wunderground(object):
             syslog.syslog(syslog.LOG_DEBUG, "get_json(%s) returned IOError" % url)
             return None
 
-        return json.loads(response.read())
+        try:
+            decoded_string = json.loads(response.read())
+        except ValueError:
+            syslog.syslog(syslog.LOG_DEBUG, "json.loads() returned ValueError")
+            return None
+
+        return decoded_string
 
     def summary(self):
         return "Conditions now: %s C, %s mbar, %s humidity, %s mm rain today" % (self.conditions['temp_c'],
@@ -255,6 +559,7 @@ class backlight():
 
         self.on_command = settings['on_command']
         self.off_command = settings['off_command']
+        self.brightness_command = settings['brightness_command']
         self.timeout = int(settings['timeout'])
         self.state = False   # True = backlight on, False = backlight off
         self.pi = areWePi()
@@ -280,6 +585,7 @@ class backlight():
             self.turnOnBacklight()
 
     def update_backlight(self):
+        """Returns true if backlight switched off during call"""
         timenow = datetime.datetime.now().time()
 
         for (on_time, off_time, weekday_only) in self.on_off:
@@ -291,30 +597,41 @@ class backlight():
 
                     else:
                         self.turnOnBacklight()
-                return
+
+                return False
 
         if self.state is True:
-            if (time.time() - self.timer) > self.timeout:
-                self.turnOffBacklight()
+            if self.timeout > 0:  # negative value means always on
+                if (time.time() - self.timer) > self.timeout:
+                    self.turnOffBacklight()
+                    return True
 
+        return False
 
     def handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONUP:
+        if event.type == pygame.MOUSEBUTTONDOWN:
             self.reset_timer()
 
     def turnOnBacklight(self):
         self.state = True
-        syslog.syslog(syslog.LOG_INFO, "Turning backlight on")
+        syslog.syslog(syslog.LOG_DEBUG, "Turning backlight on")
 
         if self.pi:
             os.system(self.on_command)
 
     def turnOffBacklight(self):
         self.state = False
-        syslog.syslog(syslog.LOG_INFO, "Turning backlight off")
+        syslog.syslog(syslog.LOG_DEBUG, "Turning backlight off")
 
         if self.pi:
             os.system(self.off_command)
+
+    def setBrightness(self, brightness):
+        if self.pi:
+            os.system(self.brightness_command % brightness)
+
+    def setTimeout(self, new_timeout):
+        self.timeout = new_timeout
 
 class screenUpdate:
     def __init__(self, conf_settings):
@@ -340,8 +657,8 @@ class Database():
 
         self.last_updated = None
 
-
         self.db = sqlite3.connect(database_settings['filename'])
+
         self.cursor = self.db.cursor()
 
         self.schema = [['datetime', 'REAL'],
@@ -355,7 +672,7 @@ class Database():
         except sqlite3.OperationalError:
             self.cursor.execute("CREATE TABLE history(%s)" % self._create_table_text())
             self.db.commit()
-            print "Created new data table in database %s" % database_settings['filename']
+            syslog.syslog(syslog.LOG_INFO, "Created new data table in database %s" % database_settings['filename'])
 
     def log_reading(self, weather_underground, indoor_sensor):
         data_dict = {}
@@ -396,6 +713,29 @@ class Database():
                 return True
 
         return False
+
+    def query(self, fields):
+        """Fields = list of fields to be returned by query, e.g. ['datetime', 'temp']
+
+        returns a list in format: [[1234, 1235, ...], [26.1, 26.2, ...]]
+        """
+        sql_string = "SELECT %s FROM history" % ', '.join(fields)
+
+        self.cursor.execute(sql_string)
+        rows = self.cursor.fetchall()
+
+        query_list = []
+
+        for i in range(len(fields)):
+
+            new_list = []
+
+            for row in rows:
+                new_list.append(row[i])
+
+            query_list.append(new_list)
+
+        return query_list
 
     def _time_specified(self, data_dict):
         if 'datetime' in data_dict:
