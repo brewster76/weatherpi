@@ -24,7 +24,12 @@ class elementClass:
         self.element_settings = utils.accumulateLeaves(conf_settings[element_name])
         
         if 'font' in self.element_settings:
-            self.font = pygame.font.Font(self.element_settings['font'][0], int(self.element_settings['font'][1]))
+            try:
+                font_path = utils.settings_path(self.element_settings['font'][0])
+                self.font = pygame.font.Font(font_path, int(self.element_settings['font'][1]))
+            except IOError:
+                Logger.warning("Cannot locate font %s" % font_path)
+                self.font = None
         else:
             self.font = None
 
@@ -125,7 +130,7 @@ class IconElementClass(elementClass):
             syslog.syslog(syslog.LOG_CRIT, "Not a valid URL: %s" % url)
             return
 
-        self.icon_file = "/home/pi/Pygame/icons/" + url[last_slash + 1:-4] + ".png"
+        self.icon_file = utils.BASE_DIR + "/icons/" + url[last_slash + 1:-4] + ".png"
 
     def render(self):
         elementClass.render(self)

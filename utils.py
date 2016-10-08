@@ -23,9 +23,14 @@ from kivy.uix.togglebutton import ToggleButton
 
 __author__ = 'nick'
 
-CONDITIONS_FILE = '/home/pi/Pygame/conditions.p'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONDITIONS_FILE = BASE_DIR + '/conditions.p'
 SEMAPHORE_FILE = '/tmp/DHT22'
 
+def settings_path(path):
+    """Returns path if it's an absolute path, otherwise adds base directory of source file to beginning"""
+    return os.path.join(BASE_DIR, path)
 
 def pass_error_wrapper(gen):
     while True:
