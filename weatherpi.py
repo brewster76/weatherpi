@@ -26,7 +26,7 @@ import elements
 import utils
 from utils import BASE_DIR
 
-SETTINGS_FILE = BASE_DIR + "/weather_nolifx.conf"
+SETTINGS_FILE = BASE_DIR + "/weather.conf"
 CRASHLOG_DIR = BASE_DIR + "/crashlog"
 
 WEATHER_FILE = "/tmp/birthdays.pkl"
@@ -331,6 +331,9 @@ if __name__ == '__main__':
     try:
         WeatherApp().run()
     except:
+        if not os.path.exists(CRASHLOG_DIR):
+            os.makedirs(CRASHLOG_DIR)
+
         f = open((CRASHLOG_DIR + '/crashlog_%s') % time.strftime("%Y-%m-%d_%H:%M:%S"), 'w')
         f.write(time.strftime('%c') + '\n')
         f.write('-' * 60 + '\n')
