@@ -9,6 +9,7 @@ from kivy.clock import Clock
 from kivy.core.image import ImageData
 from kivy.uix.image import Image
 from kivy.uix.button import Button
+from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.textinput import TextInput
 from kivy.graphics.texture import Texture
 from kivy.properties import StringProperty, ListProperty
@@ -21,10 +22,13 @@ import time
 import datetime
 import pickle
 import traceback
+import threading
 
 import elements
 import utils
 from utils import BASE_DIR
+
+import lifxlan
 
 SETTINGS_FILE = BASE_DIR + "/weather.conf"
 CRASHLOG_DIR = BASE_DIR + "/crashlog"
@@ -34,6 +38,13 @@ WEATHER_FILE = "/tmp/birthdays.pkl"
 WEATHER_SCREEN = "weather"
 OPTIONS_SCREEN = "options"
 LIFX_SCREEN = "lifx"
+
+# How often to poll lights when screen in focus
+REFRESH_INTERVAL_FOREGROUND = 10
+REFRESH_INTERVAL_BACKGROUND = 300
+
+LIFX_LAN_ON = [True, 1, "on", 65535]
+LIFX_LAN_OFF = [False, 0, "off"]
 
 BUTTON_RED_COLOR =   [1.0, 0.4, 0.4]
 BUTTON_GREEN_COLOR = [0.3, 0.6, 0.3]
@@ -136,24 +147,185 @@ class TimeChange():
         return time.strftime(self.time_format)
 
 
+class Light():
+    def __init__(self, lifxlight):
+        self.lifxlight = lifxlight
+
+        self.label = self.lifxlight.label
+        self.group = self.lifxlight.get_group_label()
+
+        Logger.info("--- New light %s / %s" % (self.label, self.group))
+
+    def state(self):
+        return self.lifxlight.state
+
+    def callback(self, instance, value):
+        """Ensures that light is set to same state as button"""
+        button_state = False if value == 'normal' else True
+
+        light_state = self.get_state()
+
+        if light_state != button_state:
+            # Is light offline?
+            if light_state is None:
+                return
+
+            self.lifxlight.set_power(button_state)
+
+        Logger.debug("Light is %s, value is %s, get_power is %s" % (self.label, value, self.get_state()))
+
+    def get_state(self):
+        try:
+            power = self.lifxlight.get_power()
+        except IOError:
+            # Light is offline
+            return None
+
+        if power in LIFX_LAN_OFF:
+            return False
+
+        if power in LIFX_LAN_ON:
+            return True
+
+        return None
+
+
 class LifxScreen(Screen):
     def __init__(self, settings, **kwargs):
         super(LifxScreen, self).__init__(**kwargs)
-        self.lights = utils.lifxLights(settings)
 
-        # Options screen button
+        self.lights = None
+
+        self.refresh_clock = None
+
+        # Thread management
+        self.refresh_thread = None
+        self.refresh_thread_finishing = False
+        self.stop_refresh_thread = False
 
         self.bind(on_pre_enter=self.pre_enter_callback)
         self.bind(on_leave=self.on_leave_callback)
 
-    def pre_enter_callback(self, *args):
-        self.lights.refresh()
+        self.ids['refresh_button'].bind(state=self.refresh_button_slot)
 
-        for light_button in self.lights.light_button_list:
-            self.ids.light_box.add_widget(light_button)
+        self.lan = lifxlan.LifxLAN()
+
+        self.refresh_lights()
+
+        self.set_schedule_interval(REFRESH_INTERVAL_BACKGROUND)
+
+    def set_schedule_interval(self, interval):
+        if self.refresh_clock is not None:
+            self.refresh_clock.cancel()
+
+        self.refresh_clock = Clock.schedule_interval(self.refresh_slot, interval)
+
+    def pre_enter_callback(self, *args):
+        Clock.schedule_once(self.refresh_slot, 1)
+
+        self.set_schedule_interval(REFRESH_INTERVAL_FOREGROUND)
 
     def on_leave_callback(self, *args):
-        self.ids.light_box.clear_widgets()
+        self.set_schedule_interval(REFRESH_INTERVAL_BACKGROUND)
+
+    def refresh_button_slot(self, instance, value):
+        if self.refresh_thread_running():
+            if self.refresh_thread_finishing:
+                self.ids['refresh_button'].state = 'normal'
+            else:
+                self.ids['refresh_button'].state = 'down'
+        else:
+            self.refresh_lights()
+
+    def refresh_slot(self, dt):
+        if self.refresh_thread_running() is False:
+            self.refresh()
+
+    def refresh_thread_running(self):
+        if self.refresh_thread is not None:
+            if self.refresh_thread.is_alive():
+                return True
+
+        return False
+
+    def refresh_lights(self):
+        if self.refresh_thread_running():
+            return
+
+        self.refresh_thread = threading.Thread(target=self.find_lights_thread)
+        self.refresh_thread.start()
+
+    def find_lights_thread(self):
+        print "Find lights thread started"
+
+        self.refresh_thread_finishing = False
+        self.ids['refresh_button'].state = 'down'
+
+        if self.lights is not None:
+            for light, button in self.lights:
+                self.ids['layout'].remove_widget(button)
+
+        self.lights = []
+
+        for l in self.lan.get_lights():
+            # Bail out?
+            if self.stop_refresh_thread:
+                return
+
+            #l.refresh()
+            new_light = Light(l)
+
+            new_button = ToggleButton(text=l.get_label())
+            new_button.bind(state=new_light.callback)
+
+            self.ids['layout'].add_widget(new_button)
+
+            self.lights.append((new_light, new_button))
+
+            self.refresh_light(new_light, new_button)
+
+        self.refresh_thread_finishing = True
+        self.ids['refresh_button'].state = 'normal'
+
+    def refresh(self):
+        if self.lights is None:
+            # No lights registered yet
+            return
+
+        if self.refresh_thread_running():
+            return
+
+        self.refresh_thread = threading.Thread(target=self.refresh_lights_thread)
+        self.refresh_thread.start()
+
+    def refresh_lights_thread(self):
+        print "Refresh lights thread started"
+
+        for light, button in self.lights:
+            if self.stop_refresh_thread:
+                # Bail out
+                return
+
+            self.refresh_light(light, button)
+
+        print "Refresh lights thread finished"
+
+    def refresh_light(self, light, button):
+        light_state = light.get_state()
+
+        if light_state is True:
+            button.state = 'down'
+
+        if light_state is False:
+            button.state = 'normal'
+
+        if light_state is None:
+            button.state = 'normal'
+
+    def on_stop(self):
+        if self.refresh_thread_running():
+            self.stop_refresh_thread = True
+            self.refresh_thread.join()
 
 
 class WeatherScreen(Screen):
@@ -295,6 +467,11 @@ class BacklightScreenManager(ScreenManager):
             self.current = WEATHER_SCREEN
 
 class WeatherApp(App):
+    def __init__(self, **kwargs):
+        self.lifx_screen = None
+
+        super(WeatherApp, self).__init__(**kwargs)
+
     def build(self):
         if os.path.isfile(SETTINGS_FILE) is False:
             Logger.exception("Cannot open configuration file %s" % SETTINGS_FILE)
@@ -310,10 +487,15 @@ class WeatherApp(App):
 
         root.add_widget(WeatherScreen(settings, name=WEATHER_SCREEN))
         root.add_widget(OptionsScreen(name=OPTIONS_SCREEN))
-        root.add_widget(LifxScreen(settings, name=LIFX_SCREEN))
+
+        self.lifx_screen = LifxScreen(settings, name=LIFX_SCREEN)
+        root.add_widget(self.lifx_screen)
 
         Clock.schedule_interval(root.clock_callback, 1.0)
         return root
+
+    def on_stop(self):
+        self.lifx_screen.on_stop()
 
 
 if __name__ == '__main__':
@@ -327,6 +509,8 @@ if __name__ == '__main__':
         Config.set('graphics', 'width', '800')
         Config.set('graphics', 'height', '480')
         Config.set('graphics', 'max_fps', '5')
+
+    WeatherApp().run()
 
     try:
         WeatherApp().run()

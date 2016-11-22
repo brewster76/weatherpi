@@ -1,10 +1,8 @@
-import colorsys
 import datetime
 import json
 import os
 import pickle
 import pygame
-import socket
 import sqlite3
 import syslog
 import threading
@@ -15,11 +13,6 @@ try:
     import astral
 except ImportError:
     pass
-
-import lifx
-import lifx.device
-
-from kivy.uix.togglebutton import ToggleButton
 
 __author__ = 'nick'
 
@@ -73,248 +66,6 @@ class eventQueue:
 
         # No events remaining
         raise StopIteration
-
-class lifxLights():
-    def __init__(self, settings):
-        self.settings = settings
-        self.light_button_list = []
-        self.group_list = []
-
-        # Create the client and start discovery
-        try:
-            self.lights = lifx.Client()
-        except socket.error:
-            print "Cannot connect to Lifx bulbs"
-            return
-
-        # Wait for discovery to complete
-        time.sleep(0.5)
-
-    def refresh(self):
-        self.light_button_list = []
-
-        try:
-            responding_lights = self.lights.get_devices()
-        except AttributeError:
-            syslog.syslog(syslog.LOG_INFO, "utils.py: responding_lights = self.lights.get_devices(), returned AttributeError")
-        else:
-            for l in responding_lights:
-                try:
-                    temp_label = l.label
-                except lifx.device.DeviceTimeoutError:
-                    temp_label = None
-
-                if temp_label in self.settings['LifX']['lights']:
-                    tl = ToggleLight(light=l)
-                    self.light_button_list.append(tl)
-
-        #
-        # TODO: Tidy this bit up, add a graceful way for refresh to fail...
-        #
-        try:
-            responding_groups = self.lights.get_groups()
-        except lifx.device.DeviceTimeoutError:
-            syslog.syslog(syslog.LOG_INFO, "utils.py: responding_groups = self.lights.get_groups(), returned DeviceTimeoutError")
-        else:
-            for i in range(len(responding_groups)):
-                if responding_groups[i].label in self.settings['LifX']['groups']:
-                    tl = ToggleLight(group=responding_groups[i])
-                    self.light_button_list.append(tl)
-
-
-class ToggleLight(ToggleButton):
-    def __init__(self, light=None, group=None, **kwargs):
-        super(ToggleLight, self).__init__(**kwargs)
-
-        self.light = light
-        self.group = group
-
-        if self.light is not None:
-            self.state = self.power_to_state(self.light.power)
-            self.text = self.light.label
-        else:
-            assert(self.group is not None)
-
-            self.state = self.power_to_state(self.group_power())
-            self.text = self.group.label
-
-        print "New button... %s" % self.text
-
-        self.bind(state=self.state_change)
-
-    def group_power(self):
-        """Returns true if any of the light group members are powered on"""
-        for m in self.group.members:
-            if m.power:
-                return True
-
-        return False
-
-    def power_to_state(self, power):
-        return 'down' if power else 'normal'
-
-    @property
-    def state_to_power(self):
-        return True if self.state == 'down' else False
-
-    def state_change(self, *args):
-        if self.light is not None:
-            self.light.power = self.state_to_power
-
-        if self.group is not None:
-            for m in self.group.members:
-                m.power = self.state_to_power
-
-
-class lifxLight_old():
-    lights = None
-
-    def __init__(self, light=None, group=None):
-        self.light_name = light
-        self.group_name = group
-
-        self._light = None
-        self._group = None
-
-        if self.light_name is None:
-            self.isgroup = True
-        else:
-            self.isgroup = False
-
-        self._find_light()
-
-    def toggle(self):
-        power = self.power()
-
-        if power is not None:
-            power = not power
-
-            if self.isgroup:
-                self._group.fade_power(power, 850)
-            else:
-                self._light.fade_power(power, 850)
-            return power
-
-        return None
-
-    def power(self):
-        if self.isgroup is False:
-            if self._light is None:
-                # Try and find the light
-                if self._find_light() is False:
-                    print "Cannot connect to light %s" % self.light_name
-                    return None
-
-            try:
-                p = self._light.power
-            except (lifx.device.DeviceTimeoutError, socket.error):
-                return None
-
-            return p
-
-        else:
-            if self._group is None:
-                # Try and find the group
-                if self._find_light() is False:
-                    print "Cannot connect to group %s" % self.group_name
-                    return None
-
-            # Return true if any lights on at all in the group
-            try:
-                num_group_members = len(self._group.members)
-            except lifx.device.DeviceTimeoutError:
-                return None
-
-            for i in range(0, num_group_members):
-                try:
-                    p = self._group.members[i].power
-                except lifx.device.DeviceTimeoutError:
-                    return None
-
-                if p is True:
-                    return True
-
-            return False
-
-    def lifx_rgb_color(self):
-        if self.isgroup:
-            light_colors = []
-
-            for i in range(0, len(self._group.members)):
-                light_colors.append(light_to_rgb_color(self._group.members[i]))
-
-            return light_colors
-        else:
-            return light_to_rgb_color(self._light)
-
-    def _init_lights(self):
-        # Create the client and start discovery
-        try:
-            lifxLight.lights = lifx.Client()
-        except socket.error:
-            print "Cannot connect to Lifx bulbs"
-            return False
-
-        # Wait for discovery to complete
-        time.sleep(0.2)
-
-        if lifxLight.lights is not None:
-            #
-            # List everything that's found
-            #
-            for l in lifxLight.lights:
-                print "Found light %s, switched on = %s" % (l.label, l.power)
-
-            groups = lifxLight.lights.get_groups()
-            for i in range(len(groups)):
-                print groups[i].label
-                #print "Found group %d, switched on = " % (groups[i].label)
-
-            return True
-
-        return False
-
-    def _find_light(self):
-        if lifxLight.lights is None:
-            if self._init_lights() is False:
-                return False
-
-        if self.isgroup is True:
-            groups = lifxLight.lights.get_groups()
-
-            for i in range(len(groups)):
-                try:
-                    label = groups[i].label
-                except lifx.device.DeviceTimeoutError:
-                    pass
-                else:
-                    if self.group_name == label:
-                        self._group = groups[i]
-
-                        return True
-        else:
-            for l in lifxLight.lights:
-                try:
-                    label = l.label
-                except lifx.device.DeviceTimeoutError:
-                    pass
-                else:
-                    if self.light_name == label:
-                        self._light = l
-
-                        return True
-
-        return False
-
-def light_to_rgb_color(light, normalise = 255):
-    """Returns a RGB representation of the light color"""
-    if light is not None:
-        (r, g, b) = colorsys.hsv_to_rgb(light.color.hue / lifx.color.HUE_MAX, light.color.saturation,
-                                        light.color.brightness)
-        return (r * normalise, g * normalise, b * normalise)
-
-    return None
-
 
 def accumulateLeaves(d, max_level=99):
     """Merges leaf options above a ConfigObj section with itself, accumulating the results.
@@ -491,7 +242,12 @@ class Wunderground(object):
 
         newconditions = self.get_json(self.conditions_url)
         if newconditions is not None:
-            self.conditions = newconditions['current_observation']
+            try:
+                self.conditions = newconditions['current_observation']
+            except KeyError:
+                print "updateConditions():"
+                print newconditions
+                raise KeyError('current_observation')
 
             new_wind = "%s, %.1f" % (self.conditions['wind_dir'], self.conditions['wind_mph'])
             self.conditions['new_wind'] = new_wind

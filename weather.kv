@@ -119,7 +119,7 @@
                 min: 0
                 max: 255
                 value: 255
-                id: "brightness_slider"
+                id: brightness_slider
                 on_value: root.backlight_brightness_change(self.value)
 
             BoxLayout:
@@ -148,7 +148,6 @@
             text: ''
 
 <LifxScreen>:
-
     BoxLayout:
         orientation: 'vertical'
 
@@ -157,12 +156,11 @@
             font_size: 20
             text: "Lights"
 
-        BoxLayout:
-            id: light_box
+        GridLayout:
+            id: layout
+            cols: 2
             size_hint: 1, 0.65
-            orientation: 'horizontal'
-
-
+            padding: 10, 10
 
         BoxLayout:
             orientation: 'horizontal'
@@ -170,7 +168,12 @@
             padding: 20, 20
 
             Label:
-                size_hint: 0.8, 1
+                size_hint: 0.6, 1
+
+            Button:
+                id: refresh_button
+                size_hint: 0.2, 1
+                text: "Refresh"
 
             Button:
                 size_hint: 0.2, 1
