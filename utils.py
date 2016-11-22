@@ -9,6 +9,8 @@ import threading
 import time
 import urllib
 
+from kivy.logger import Logger
+
 try:
     import astral
 except ImportError:
@@ -176,7 +178,7 @@ class Wunderground(object):
         self.offline = conf_settings['Wunderground'].as_bool('offline')
 
         if self.offline is True:
-            print "Weather forecasting is offline"
+            Logger.info("Weather: Weather forecasting is offline")
 
         self.conditions = self.forecast = None
 

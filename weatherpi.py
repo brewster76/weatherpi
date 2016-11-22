@@ -121,15 +121,15 @@ class OptionsScreen(Screen):
         self.logger_history = string
 
     def power_off(self):
-        Logger.info("Powering off at user's request")
+        Logger.info("WeatherPi: Powering off at user's request")
         os.system("sudo poweroff")
 
     def restart(self):
-        Logger.info("Rebooting at user's request")
+        Logger.info("WeatherPi: Rebooting at user's request")
         os.system("sudo reboot")
 
 
-class TimeChange():
+class TimeChange:
     def __init__(self, settings):
         self.time_format = settings['DateTime']['time']['format']
         self.last_time = self._new_time_string()
@@ -147,17 +147,21 @@ class TimeChange():
         return time.strftime(self.time_format)
 
 
-class Light():
-    def __init__(self, lifxlight):
+class Light:
+    def __init__(self, lifxlight, rooms):
         self.lifxlight = lifxlight
+        self.rooms = rooms
 
-        self.label = self.lifxlight.label
+        self.label = self.lifxlight.get_label()
         self.group = self.lifxlight.get_group_label()
 
-        Logger.info("--- New light %s / %s" % (self.label, self.group))
+        Logger.info("Lights: New light %s / %s" % (self.label, self.group))
 
-    def state(self):
-        return self.lifxlight.state
+        self.button = ToggleButton(text=self.label)
+        self.button.bind(state=self.callback)
+
+    def button_state(self):
+        return False if self.button.state == 'normal' else True
 
     def callback(self, instance, value):
         """Ensures that light is set to same state as button"""
@@ -171,8 +175,21 @@ class Light():
                 return
 
             self.lifxlight.set_power(button_state)
+            self.rooms.refresh()
 
-        Logger.debug("Light is %s, value is %s, get_power is %s" % (self.label, value, self.get_state()))
+        Logger.debug("Lights: Light is %s, value is %s, get_power is %s" % (self.label, value, self.get_state()))
+
+    def refresh_light(self):
+        light_state = self.get_state()
+
+        if light_state is True:
+            self.button.state = 'down'
+
+        if light_state is False:
+            self.button.state = 'normal'
+
+        if light_state is None:
+            self.button.state = 'normal'
 
     def get_state(self):
         try:
@@ -190,11 +207,88 @@ class Light():
         return None
 
 
+class Rooms:
+    def __init__(self):
+        self.room_list = []
+
+    def add_room(self, light):
+        for room in self.room_list:
+            if room.label == light.group:
+                # Room already exists, add another light to it
+                room.add_light(light)
+                return None
+
+        new_room = Room(light.group)
+
+        self.room_list.append(new_room)
+
+        new_room.add_light(light)
+
+        return new_room.room_button
+
+    def refresh(self):
+        for room in self.room_list:
+            room.refresh()
+
+    def __str__(self):
+        str_list = []
+
+        for room in self.room_list:
+            str_list.append("%s" % room)
+
+        return ', '.join(str_list)
+
+
+class Room:
+    def __init__(self, label):
+        self.light_list = []
+        self.label = label
+
+        self.refresh_in_process = False
+
+        self.room_button = ToggleButton(text=self.label)
+        self.room_button.bind(state=self.callback)
+
+    def add_light(self, light):
+        self.light_list.append(light)
+
+    def refresh(self):
+        self.refresh_in_process = True
+
+        room_state = True
+
+        for light in self.light_list:
+            # State is off unless all lights are on
+            if light.button_state() is False:
+                room_state = False
+
+        self.room_button.state = 'normal' if room_state is False else 'down'
+
+        self.refresh_in_process = False
+
+    def __str__(self):
+        light_name_list = []
+
+        for light in self.light_list:
+            light_name_list.append(light.label)
+
+        return "%s [%s]" % (self.label, ', '.join(light_name_list))
+
+    def callback(self, instance, value):
+        if self.refresh_in_process:
+            # User did not press the button
+            return
+
+        for light in self.light_list:
+            light.button.state = value
+
+
 class LifxScreen(Screen):
     def __init__(self, settings, **kwargs):
         super(LifxScreen, self).__init__(**kwargs)
 
         self.lights = None
+        self.rooms = None
 
         self.refresh_clock = None
 
@@ -256,36 +350,45 @@ class LifxScreen(Screen):
         self.refresh_thread.start()
 
     def find_lights_thread(self):
-        print "Find lights thread started"
+        Logger.debug("Lights: Find lights thread started")
 
         self.refresh_thread_finishing = False
         self.ids['refresh_button'].state = 'down'
 
         if self.lights is not None:
             for light, button in self.lights:
-                self.ids['layout'].remove_widget(button)
+                self.ids['light_layout'].remove_widget(button)
+
+        if self.rooms is not None:
+            for room in self.rooms.room_list:
+                self.ids['group_layout'].remove_widget(room.room_button)
 
         self.lights = []
+        self.rooms = Rooms()
 
         for l in self.lan.get_lights():
             # Bail out?
             if self.stop_refresh_thread:
                 return
 
-            #l.refresh()
-            new_light = Light(l)
+            new_light = Light(l, self.rooms)
 
-            new_button = ToggleButton(text=l.get_label())
-            new_button.bind(state=new_light.callback)
+            self.ids['light_layout'].add_widget(new_light.button)
 
-            self.ids['layout'].add_widget(new_button)
+            self.lights.append(new_light)
 
-            self.lights.append((new_light, new_button))
+            new_light.refresh_light()
 
-            self.refresh_light(new_light, new_button)
+            new_room_button = self.rooms.add_room(new_light)
+            if new_room_button is not None:
+                self.ids['group_layout'].add_widget(new_room_button)
+
+        self.rooms.refresh()
 
         self.refresh_thread_finishing = True
         self.ids['refresh_button'].state = 'normal'
+
+        Logger.debug("Lights: Find lights thread finished")
 
     def refresh(self):
         if self.lights is None:
@@ -299,28 +402,18 @@ class LifxScreen(Screen):
         self.refresh_thread.start()
 
     def refresh_lights_thread(self):
-        print "Refresh lights thread started"
+        Logger.debug("LightS: Refresh lights thread started")
 
-        for light, button in self.lights:
+        for light in self.lights:
             if self.stop_refresh_thread:
                 # Bail out
                 return
 
-            self.refresh_light(light, button)
+            light.refresh_light()
 
-        print "Refresh lights thread finished"
+        self.rooms.refresh()
 
-    def refresh_light(self, light, button):
-        light_state = light.get_state()
-
-        if light_state is True:
-            button.state = 'down'
-
-        if light_state is False:
-            button.state = 'normal'
-
-        if light_state is None:
-            button.state = 'normal'
+        Logger.debug("Lights: Refresh lights thread finished")
 
     def on_stop(self):
         if self.refresh_thread_running():
@@ -339,7 +432,7 @@ class WeatherScreen(Screen):
         self.element_list = []
 
         for section_name, function_name in elements.element_types:
-            Logger.info("%s, %s" % (section_name, function_name))
+            Logger.debug("Weather: %s, %s" % (section_name, function_name))
             if 'Forecast' is section_name:
                 for day in settings[section_name].sections:
                     for sub_section in settings[section_name][day].sections:
@@ -439,6 +532,7 @@ class WeatherScreen(Screen):
 
         self.birthday_label.text = new_text
 
+
 class BacklightScreenManager(ScreenManager):
     """Adds backlight management to the ScreenManager class"""
 
@@ -474,7 +568,7 @@ class WeatherApp(App):
 
     def build(self):
         if os.path.isfile(SETTINGS_FILE) is False:
-            Logger.exception("Cannot open configuration file %s" % SETTINGS_FILE)
+            Logger.exception("WeatherPi: Cannot open configuration file %s" % SETTINGS_FILE)
             exit()
 
         settings = configobj.ConfigObj(SETTINGS_FILE)
@@ -499,7 +593,7 @@ class WeatherApp(App):
 
 
 if __name__ == '__main__':
-    Logger.info("Weather forecaster starting up...")
+    Logger.info("WeatherPi: Weather forecaster starting up...")
 
     # Get pygame going
     pygame.init()
